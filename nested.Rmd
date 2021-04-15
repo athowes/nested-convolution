@@ -1,0 +1,133 @@
+---
+title: Nested parameterisation
+author: Adam Howes
+---
+
+```{r}
+library(rstan)
+library(INLA)
+library(ggplot2)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+Grouping structure can be either cross-classified or nested.
+Here are some [slides](http://www.utstat.toronto.edu/~brunner/oldclass/appliedf12/lectures/2101f12RandomNested.pdf) from UT.
+
+* GLMM $Y = X \beta + Zb + \epsilon$
+
+```{r}
+data(eggs, package = "faraway")
+summary(eggs)
+head(eggs)
+```
+
+```{r}
+ggplot(eggs, aes(y = Fat, x = Lab, color = Technician, shape = Sample)) + 
+  geom_point(position = position_jitter(width = 0.1, height = 0.0))
+```
+
+```{r}
+eggs$labtech <- factor(paste0(eggs$Lab, eggs$Technician))
+eggs$labtechsamp <- factor(paste0(eggs$Lab, eggs$Technician, eggs$Sample))
+```
+## INLA
+
+```{r}
+formula <- Fat ~ 1 + f(Lab, model = "iid") + f(labtech, model = "iid") + f(labtechsamp, model = "iid")
+result <- inla(formula, family = "gaussian", data = eggs)
+result <- inla.hyperpar(result)
+summary(result)
+```
+```{r}
+apar <- 0.5
+bpar <- apar * var(eggs$Fat)
+lgprior <- list(prec = list(prior = "loggamma", param = c(apar, bpar)))
+
+formula <- Fat ~ 1 + 
+  f(Lab, model = "iid", hyper = lgprior) + 
+  f(labtech, model = "iid", hyper = lgprior) +
+  f(labtechsamp, model = "iid", hyper = lgprior)
+
+result <- inla(formula, family = "gaussian", data=eggs)
+result <- inla.hyperpar(result)
+summary(result)
+```
+```{r}
+sigma <- lapply(
+  result$internal.marginals.hyperpar,
+  FUN = function(y) inla.tmarginal(function(x) 1/sqrt(exp(x)), y)
+)
+
+do.call("rbind", lapply(sigma, FUN = function(x) inla.zmarginal(x, silent = TRUE)))
+```
+```{r}
+df <- data.frame(do.call("rbind", sigma), "term" = gl(4, 2048, labels = c("epsilon", "Lab", "Tech", "Samp")))
+
+ggplot(df, aes(x = x, y = y, col = term)) + 
+  geom_line() +
+  labs(x = "Standard deviation", y = "Density") + 
+  xlim(0, 0.25)
+```
+
+## Stan
+
+```{r}
+level1 <- as.numeric(eggs$Lab)
+level2 <- as.numeric(eggs$labtech)
+level3 <- as.numeric(eggs$labtechsamp)
+
+sdscal <- sd(eggs$Fat)
+
+eggdat <- list(
+  N = nrow(eggs),
+  N1 = max(level1),
+  N2 = max(level2),
+  N3 = max(level3),
+  y = eggs$Fat,
+  level1 = levind1,
+  level2 = levind2,
+  level3 = levind3,
+  sdscal = sdscal
+)
+```
+
+```{r}
+rt <- stanc(file = "nested.stan")
+sm <- stan_model(stanc_ret = rt, verbose = FALSE)
+system.time(fit <- sampling(sm, data = eggdat))
+```
+
+```{r}
+bayesplot::mcmc_trace(fit, pars = c("sigma", "sigma1", "sigma2", "sigma3"))
+```
+
+Expect to be observing negative correlation:
+
+```{r}
+bayesplot::mcmc_pairs(
+  fit, 
+  pars = c("sigma", "sigma1", "sigma2", "sigma3"), 
+  off_diag_args = list(size = 1, alpha = 0.2)
+)
+```
+
+### Reparametrise
+
+```{r}
+rt <- stanc(file = "nested-convolution.stan")
+sm <- stan_model(stanc_ret = rt, verbose = FALSE)
+system.time(fit2 <- sampling(sm, data = eggdat))
+```
+
+```{r}
+bayesplot::mcmc_trace(fit2, pars = c("sigmaeps", "sigmaphi", "pi1", "pi2"))
+```
+```{r}
+bayesplot::mcmc_pairs(
+  fit2, 
+  pars = c("sigmaeps", "sigmaphi", "pi1", "pi2"), 
+  off_diag_args = list(size = 1, alpha = 0.2)
+)
+```
+
