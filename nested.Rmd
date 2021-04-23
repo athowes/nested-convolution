@@ -1,20 +1,20 @@
 ---
-title: Nested parameterisation
-author: Adam Howes
+title: "Nested convolution reparameterisation"
+author: "Adam Howes"
 ---
 
 ```{r}
-library(rstan)
-library(INLA)
-library(ggplot2)
+library(rstan, quietly = TRUE)
+library(INLA, quietly = TRUE)
+library(ggplot2, quietly = TRUE)
 rstan_options(auto_write = TRUE)
 options(mc.cores = parallel::detectCores())
 ```
 
 Grouping structure can be either cross-classified or nested.
-Here are some [slides](http://www.utstat.toronto.edu/~brunner/oldclass/appliedf12/lectures/2101f12RandomNested.pdf) from UT.
+Here are some [slides](http://www.utstat.toronto.edu/~brunner/oldclass/appliedf12/lectures/2101f12RandomNested.pdf) from UT about it.
 
-* GLMM $Y = X \beta + Zb + \epsilon$
+In this example we follow the nested model [eggs example](https://people.bath.ac.uk/jjf23/mixchange/nested.html) of Julian Faraway, who provides code to fit the model in (amongst other things) `R-INLA` and `rstan`.
 
 ```{r}
 data(eggs, package = "faraway")
@@ -40,37 +40,40 @@ result <- inla.hyperpar(result)
 summary(result)
 ```
 ```{r}
-apar <- 0.5
-bpar <- apar * var(eggs$Fat)
-lgprior <- list(prec = list(prior = "loggamma", param = c(apar, bpar)))
-
-formula <- Fat ~ 1 + 
-  f(Lab, model = "iid", hyper = lgprior) + 
-  f(labtech, model = "iid", hyper = lgprior) +
-  f(labtechsamp, model = "iid", hyper = lgprior)
-
-result <- inla(formula, family = "gaussian", data=eggs)
-result <- inla.hyperpar(result)
-summary(result)
+# INLA stuff not that relevant
+# apar <- 0.5
+# bpar <- apar * var(eggs$Fat)
+# lgprior <- list(prec = list(prior = "loggamma", param = c(apar, bpar)))
+# 
+# formula <- Fat ~ 1 + 
+#   f(Lab, model = "iid", hyper = lgprior) + 
+#   f(labtech, model = "iid", hyper = lgprior) +
+#   f(labtechsamp, model = "iid", hyper = lgprior)
+# 
+# result <- inla(formula, family = "gaussian", data=eggs)
+# result <- inla.hyperpar(result)
+# summary(result)
 ```
 ```{r}
-sigma <- lapply(
-  result$internal.marginals.hyperpar,
-  FUN = function(y) inla.tmarginal(function(x) 1/sqrt(exp(x)), y)
-)
-
-do.call("rbind", lapply(sigma, FUN = function(x) inla.zmarginal(x, silent = TRUE)))
+# sigma <- lapply(
+#   result$internal.marginals.hyperpar,
+#   FUN = function(y) inla.tmarginal(function(x) 1/sqrt(exp(x)), y)
+# )
+# 
+# do.call("rbind", lapply(sigma, FUN = function(x) inla.zmarginal(x, silent = TRUE)))
 ```
 ```{r}
-df <- data.frame(do.call("rbind", sigma), "term" = gl(4, 2048, labels = c("epsilon", "Lab", "Tech", "Samp")))
-
-ggplot(df, aes(x = x, y = y, col = term)) + 
-  geom_line() +
-  labs(x = "Standard deviation", y = "Density") + 
-  xlim(0, 0.25)
+# df <- data.frame(do.call("rbind", sigma), "term" = gl(4, 2048, labels = c("epsilon", "Lab", "Tech", "Samp")))
+# 
+# ggplot(df, aes(x = x, y = y, col = term)) + 
+#   geom_line() +
+#   labs(x = "Standard deviation", y = "Density") + 
+#   xlim(0, 0.25)
 ```
 
 ## Stan
+
+The standard parameterisation (see `nested.stan`):
 
 ```{r}
 level1 <- as.numeric(eggs$Lab)
@@ -85,49 +88,73 @@ eggdat <- list(
   N2 = max(level2),
   N3 = max(level3),
   y = eggs$Fat,
-  level1 = levind1,
-  level2 = levind2,
-  level3 = levind3,
+  level1 = level1,
+  level2 = level2,
+  level3 = level3,
   sdscal = sdscal
 )
 ```
 
-```{r}
-rt <- stanc(file = "nested.stan")
-sm <- stan_model(stanc_ret = rt, verbose = FALSE)
-system.time(fit <- sampling(sm, data = eggdat))
+```{r message=FALSE, warning=FALSE}
+fit <- rstan::stan(file = "stan/nested.stan", data = eggdat, iter = 2000)
+rstan::get_elapsed_time(fit)
 ```
 
 ```{r}
 bayesplot::mcmc_trace(fit, pars = c("sigma", "sigma1", "sigma2", "sigma3"))
 ```
 
-Expect to be observing negative correlation:
+Expect to be observing negative correlation between the precision parameters.
+There is only a finite amount of variance to explain so they are in competition with each other.
 
 ```{r}
+np <- bayesplot::nuts_params(fit)
+
 bayesplot::mcmc_pairs(
   fit, 
   pars = c("sigma", "sigma1", "sigma2", "sigma3"), 
-  off_diag_args = list(size = 1, alpha = 0.2)
+  off_diag_args = list(size = 1, alpha = 0.2),
+  np = np
 )
 ```
 
 ### Reparametrise
 
-```{r}
-rt <- stanc(file = "nested-convolution.stan")
-sm <- stan_model(stanc_ret = rt, verbose = FALSE)
-system.time(fit2 <- sampling(sm, data = eggdat))
+Trying a convolutional reparameterisation analogous to the BYM2 reparameterisation of BYM (see `nested-convolution.stan`):
+
+```{r message=FALSE, warning=FALSE}
+fit2 <- rstan::stan(file = "stan/nested-convolution.stan", data = eggdat, iter = 2000)
+rstan::get_elapsed_time(fit2)
 ```
 
 ```{r}
-bayesplot::mcmc_trace(fit2, pars = c("sigmaeps", "sigmaphi", "pi1", "pi2"))
+bayesplot::mcmc_trace(fit2, pars = c("sigma", "sigmaphi", "pi1", "pi2"))
 ```
 ```{r}
+np2 <- bayesplot::nuts_params(fit2)
+
 bayesplot::mcmc_pairs(
   fit2, 
-  pars = c("sigmaeps", "sigmaphi", "pi1", "pi2"), 
-  off_diag_args = list(size = 1, alpha = 0.2)
+  pars = c("sigma", "sigmaphi", "pi1", "pi2"), 
+  off_diag_args = list(size = 1, alpha = 0.2),
+  np = np2
 )
 ```
 
+Slower but no divergent transitions.
+
+Are they getting the same answer?
+
+```{r}
+su_inla <- c(result$summary.random$Lab$mean, result$summary.random$labtech$mean, result$summary.random$labtechsamp$mean)
+u_stan <- rstan::summary(fit, pars = c("u1", "u2", "u3"))$summary[, "mean"]
+u_stan2 <- rstan::summary(fit2, pars = c("u1", "u2", "u3"))$summary[, "mean"]
+```
+```{r}
+plot(u_stan, u_stan2)
+abline(a = 0, b = 1)
+```
+
+```{r}
+sessionInfo()
+```
