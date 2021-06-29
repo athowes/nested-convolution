@@ -14,7 +14,7 @@ options(mc.cores = parallel::detectCores())
 Grouping structure can be either cross-classified or nested.
 Here are some [slides](http://www.utstat.toronto.edu/~brunner/oldclass/appliedf12/lectures/2101f12RandomNested.pdf) from UT about it.
 
-In this example we follow the nested model [eggs example](https://people.bath.ac.uk/jjf23/mixchange/nested.html) of Julian Faraway, who provides code to fit the model in (amongst other things) `R-INLA` and `rstan`.
+In this example we follow the nested model [eggs example](https://people.bath.ac.uk/jjf23/mixchange/nested.html) of Julian Faraway, who provides code to fit the model in (amongst other things) [`R-INLA`](https://people.bath.ac.uk/jjf23/inla/nested.html) and [`rstan`](https://people.bath.ac.uk/jjf23/stan/nested.html).
 
 ```{r}
 data(eggs, package = "faraway")
